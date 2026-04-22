@@ -1,0 +1,6 @@
+.venv/
+mlx-swift-examples/
+__pycache__/
+*.pyc
+.claude/
+.DS_Store
