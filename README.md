@@ -59,6 +59,28 @@ The model downloads automatically on first run (~27GB).
 | `--benchmark` | off | Show tok/s and memory stats |
 | `--no-stream` | off | Wait for full response |
 
+## Benchmarks (M5 Max, 128GB)
+
+### Short context (512 tokens generated)
+
+| | TurboQuantPlus | Vanilla mlx-lm |
+|---|---|---|
+| Prompt | 197 tok/s | 514 tok/s |
+| Generation | 106 tok/s | 109 tok/s |
+| Peak memory | 28.3 GB | 28.3 GB |
+
+At short context lengths, performance is nearly identical.
+
+### Long context (2048 tokens generated)
+
+| | TurboQuantPlus | Vanilla mlx-lm | Delta |
+|---|---|---|---|
+| Prompt | 527 tok/s | 726 tok/s | -27% |
+| **Generation** | **95.5 tok/s** | **21.3 tok/s** | **4.5x faster** |
+| Peak memory | 28.5 GB | 28.5 GB | Same |
+
+Vanilla mlx-lm drops from 109 tok/s to 21 tok/s as context grows. TurboQuantPlus holds at 95+ tok/s.
+
 ## How the Optimization Works
 
 The KV attention cache grows with every generated token. At full precision it becomes a bottleneck and generation slows down fast. TurboQuantPlus quantizes this cache to 4-bit with two refinements:
