@@ -43,7 +43,21 @@ def build_parser():
         description="TurboQuantPlus — optimized Qwen3.6-35B-A3B on Apple Silicon"
     )
     import os
-    default_model = os.path.expanduser(MODEL_LOCAL) if os.path.isdir(os.path.expanduser(MODEL_LOCAL)) else MODEL_ID
+    local = os.path.expanduser(MODEL_LOCAL)
+    snapshots = os.path.join(local, "snapshots")
+    if os.path.isdir(snapshots):
+        # Use the most recent snapshot (by mtime) under the HF cache dir
+        entries = sorted(
+            (os.path.join(snapshots, d) for d in os.listdir(snapshots)
+             if os.path.isdir(os.path.join(snapshots, d))),
+            key=os.path.getmtime,
+            reverse=True,
+        )
+        default_model = entries[0] if entries else MODEL_ID
+    elif os.path.isdir(local):
+        default_model = local
+    else:
+        default_model = MODEL_ID
     p.add_argument("--model", default=default_model, help="HF model ID or local path")
     p.add_argument("--prompt", "-p", type=str, help="Single prompt (non-interactive)")
     p.add_argument("--system", "-s", type=str, default=None, help="System prompt")
