@@ -11,11 +11,12 @@ optimizations for M-series Macs:
 """
 
 import argparse
+import asyncio
 import json
 import sys
 import time
 import uuid
-from typing import Generator
+from typing import AsyncGenerator, Generator
 
 import mlx.core as mx
 from mlx_lm import load, generate
@@ -288,14 +289,10 @@ def run_server(model, tokenizer, args):
         created = int(time.time())
 
         if stream:
-            def event_stream() -> Generator[str, None, None]:
-                prompt_tokens = 0
-                gen_tokens = 0
+            async def event_stream() -> AsyncGenerator[str, None]:
                 for chunk in stream_generate(
                     model, tokenizer, prompt=formatted, **gen_kwargs,
                 ):
-                    prompt_tokens = getattr(chunk, "prompt_tokens", 0)
-                    gen_tokens = getattr(chunk, "generation_tokens", 0)
                     data = {
                         "id": request_id,
                         "object": "chat.completion.chunk",
@@ -310,6 +307,7 @@ def run_server(model, tokenizer, args):
                         ],
                     }
                     yield f"data: {json.dumps(data)}\n\n"
+                    await asyncio.sleep(0)
                 # Final chunk with finish_reason
                 final = {
                     "id": request_id,
