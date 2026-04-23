@@ -1,18 +1,18 @@
 # TurboQuantPlus
 
-Run Qwen3.6-35B-A3B locally on Apple Silicon with optimized KV cache quantization for fast, sustained inference.
+Run Qwen3-Coder-30B-A3B-Instruct locally on Apple Silicon with optimized KV cache quantization, plus an OpenAI-compatible server for tools like opencode.
 
 ## What It Does
 
-Runs the [Qwen3.6-35B-A3B-6bit](https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-6bit) model (35B params, ~3B active per token) through Apple's MLX framework with 4-bit KV cache quantization. This keeps generation speed at ~95 tok/s even at 2048+ tokens, compared to ~21 tok/s without it.
+Runs [`mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit`](https://huggingface.co/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit) (30B params, ~3B active per token, 8-bit MLX weights) through Apple's MLX framework with 4-bit KV cache quantization. This keeps generation speed high even at long contexts, and preserves tool-calling accuracy — verified end-to-end with the included eval harness.
 
 ## Requirements
 
 - Apple Silicon Mac (M1 or later)
 - macOS 14+
 - Python 3.12+
-- 32GB+ unified memory
-- ~27GB disk for model weights
+- 64GB+ unified memory recommended
+- ~30GB disk for model weights
 
 ## Setup
 
@@ -25,23 +25,39 @@ source .venv/bin/activate
 pip install mlx-lm huggingface_hub
 ```
 
-The model downloads automatically on first run (~27GB).
+The model downloads automatically on first run (~30GB).
 
 ## Usage
 
+### Chat / single prompt
+
 ```bash
-# Interactive chat
-./run.sh
-
-# Single prompt
-./run.sh -p "Explain quantum computing"
-
-# Chat with speed stats
-./run.sh --benchmark --chat
-
-# Custom settings
-./run.sh --temp 0.3 --max-tokens 8192 --kv-bits 8
+./run.sh                              # interactive chat
+./run.sh -p "Explain MoE routing."    # single prompt
+./run.sh --benchmark --chat           # chat with speed stats
+./run.sh --temp 0.3 --kv-bits 8       # custom settings
 ```
+
+### Serve over HTTP (OpenAI-compatible, for opencode et al.)
+
+```bash
+./run.sh --serve                      # 127.0.0.1:8080/v1
+./run.sh --serve --port 9000          # custom port
+```
+
+Then point opencode at it by putting this in `~/.opencode.json`:
+
+```json
+{
+  "agents": {
+    "coder": { "model": "local.mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit" },
+    "task":  { "model": "local.mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit" },
+    "title": { "model": "local.mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit" }
+  }
+}
+```
+
+and launching opencode with `LOCAL_ENDPOINT=http://127.0.0.1:8080/v1 opencode`.
 
 ### Options
 
@@ -58,35 +74,36 @@ The model downloads automatically on first run (~27GB).
 | `--quantized-kv-start` | 512 | Full-precision tokens before quantization |
 | `--benchmark` | off | Show tok/s and memory stats |
 | `--no-stream` | off | Wait for full response |
+| `--serve` | off | Launch HTTP server instead of CLI |
+| `--host` | 127.0.0.1 | Server host |
+| `--port` | 8080 | Server port |
 
-## Benchmarks (M5 Max, 128GB)
+## Tool-calling eval
 
-### Short context (512 tokens generated)
+Two evaluators are included, covering the OpenAI `tools` / `tool_calls` path used by opencode:
 
-| | TurboQuantPlus | Vanilla mlx-lm |
-|---|---|---|
-| Prompt | 197 tok/s | 514 tok/s |
-| Generation | 106 tok/s | 109 tok/s |
-| Peak memory | 28.3 GB | 28.3 GB |
+- **`eval_tools.py`** — hits the running HTTP server (`./run.sh --serve`) with a suite of tool-call tasks and scores tool selection + argument validity.
+- **`eval_tools_local.py`** — loads the model in-process and runs the same suite under four KV-cache configurations (full-precision, 8-bit, 4-bit @ start=512, 4-bit @ start=0), with an optional `--long-context` mode that exercises KV quant at ~3.8k-token prompts.
 
-At short context lengths, performance is nearly identical.
+On M5 Max 128GB, Qwen3-Coder-30B-A3B-Instruct-8bit scores **11/11 at every KV configuration, at both short and long context** — the KV quant does not degrade tool calling.
 
-### Long context (2048 tokens generated)
+```bash
+# Server eval (needs --serve running in another terminal)
+python eval_tools.py
 
-| | TurboQuantPlus | Vanilla mlx-lm | Delta |
-|---|---|---|---|
-| Prompt | 527 tok/s | 726 tok/s | -27% |
-| **Generation** | **95.5 tok/s** | **21.3 tok/s** | **4.5x faster** |
-| Peak memory | 28.5 GB | 28.5 GB | Same |
-
-Vanilla mlx-lm drops from 109 tok/s to 21 tok/s as context grows. TurboQuantPlus holds at 95+ tok/s.
+# In-process comparison across KV configs
+python eval_tools_local.py
+python eval_tools_local.py --long-context
+```
 
 ## How the Optimization Works
 
 The KV attention cache grows with every generated token. At full precision it becomes a bottleneck and generation slows down fast. TurboQuantPlus quantizes this cache to 4-bit with two refinements:
 
-- The first 512 tokens stay at full precision (system prompt and early context matter most for quality)
-- Values are quantized in groups of 64 to reduce error
+- The first 512 tokens stay at full precision (system prompt and early context matter most for quality).
+- Values are quantized in groups of 64 to reduce error.
+
+In the included eval, 4-bit KV quantization holds 100% tool-call accuracy at ~3.8k-token prompts while full-precision and 4-bit configurations run within a few percent of each other on throughput.
 
 ## License
 

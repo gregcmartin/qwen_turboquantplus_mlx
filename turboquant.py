@@ -2,12 +2,15 @@
 """
 TurboQuantPlus - Optimized local LLM inference on Apple Silicon via MLX.
 
-Runs Qwen3.6-35B-A3B (MoE: 35B total, ~3B active) with aggressive
-optimizations for M-series Macs:
+Runs Qwen3-Coder-30B-A3B-Instruct (MoE: 30B total, ~3B active) with
+aggressive optimizations for M-series Macs:
   - KV cache quantization (4-bit) for 2-3x memory savings on long contexts
   - Quantized KV delayed start for initial quality preservation
   - Prompt caching for repeat/continuation queries
   - Tuned sampling defaults for quality + speed
+
+Tool calling is verified with `eval_tools.py` (server) and
+`eval_tools_local.py` (in-process, covers KV-quant configurations).
 """
 
 import argparse
@@ -20,8 +23,7 @@ from mlx_lm.generate import stream_generate
 from mlx_lm.sample_utils import make_sampler
 
 
-MODEL_ID = "mlx-community/Qwen3.6-35B-A3B-6bit"
-MODEL_LOCAL = "~/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-6bit"
+MODEL_ID = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit"
 
 # TurboQuantPlus defaults — tuned for M5 Max 128GB
 DEFAULTS = {
@@ -37,11 +39,10 @@ DEFAULTS = {
 
 def build_parser():
     p = argparse.ArgumentParser(
-        description="TurboQuantPlus — optimized Qwen3.6-35B-A3B on Apple Silicon"
+        description="TurboQuantPlus — optimized Qwen3-Coder-30B-A3B-Instruct on Apple Silicon"
     )
-    import os
-    default_model = os.path.expanduser(MODEL_LOCAL) if os.path.isdir(os.path.expanduser(MODEL_LOCAL)) else MODEL_ID
-    p.add_argument("--model", default=default_model, help="HF model ID or local path")
+    p.add_argument("--model", default=MODEL_ID,
+                   help="HF model ID or local snapshot path")
     p.add_argument("--prompt", "-p", type=str, help="Single prompt (non-interactive)")
     p.add_argument("--system", "-s", type=str, default=None, help="System prompt")
     p.add_argument("--max-tokens", type=int, default=DEFAULTS["max_tokens"])
@@ -55,6 +56,11 @@ def build_parser():
     p.add_argument("--no-stream", action="store_true", help="Disable streaming output")
     p.add_argument("--chat", action="store_true", help="Interactive chat mode")
     p.add_argument("--benchmark", action="store_true", help="Print token/s stats")
+    p.add_argument("--serve", action="store_true",
+                   help="Launch the OpenAI-compatible HTTP server (for opencode et al.) "
+                        "on --host:--port instead of running CLI chat")
+    p.add_argument("--host", default="127.0.0.1", help="Server host (with --serve)")
+    p.add_argument("--port", type=int, default=8080, help="Server port (with --serve)")
     return p
 
 
@@ -164,16 +170,34 @@ def run_chat(model, tokenizer, args):
         history.append({"role": "assistant", "content": "".join(response_parts)})
 
 
+def run_server(args):
+    """Delegate to mlx_lm.server so opencode / any OpenAI-compatible
+    client can reach the model at http://host:port/v1."""
+    import runpy
+    sys.argv = [
+        "mlx_lm.server",
+        "--model", args.model,
+        "--host", args.host,
+        "--port", str(args.port),
+        "--log-level", "INFO",
+    ]
+    print(f"TurboQuantPlus server → http://{args.host}:{args.port}/v1  (model: {args.model})")
+    runpy.run_module("mlx_lm.server", run_name="__main__")
+
+
 def main():
     args = build_parser().parse_args()
-    model, tokenizer = load_model(args.model)
 
+    if args.serve:
+        run_server(args)
+        return
+
+    model, tokenizer = load_model(args.model)
     if args.chat:
         run_chat(model, tokenizer, args)
     elif args.prompt:
         run_single(model, tokenizer, args.prompt, args)
     else:
-        # Default to chat mode if no prompt given
         run_chat(model, tokenizer, args)
 
 
