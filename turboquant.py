@@ -2,8 +2,8 @@
 """
 TurboQuantPlus - Optimized local LLM inference on Apple Silicon via MLX.
 
-Runs Qwen3-Coder-30B-A3B-Instruct (MoE: 30B total, ~3B active) with
-aggressive optimizations for M-series Macs:
+Runs Qwen3.6-27B (dense 27B) quantized to MX-FP8 with aggressive optimizations
+for M-series Macs:
   - KV cache quantization (4-bit) for 2-3x memory savings on long contexts
   - Quantized KV delayed start for initial quality preservation
   - Prompt caching for repeat/continuation queries
@@ -14,6 +14,7 @@ Tool calling is verified with `eval_tools.py` (server) and
 """
 
 import argparse
+import os
 import sys
 import time
 
@@ -23,7 +24,11 @@ from mlx_lm.generate import stream_generate
 from mlx_lm.sample_utils import make_sampler
 
 
-MODEL_ID = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit"
+MODEL_ID = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "models",
+    "Qwen3.6-27B-MLX-mxfp8",
+)
 
 # TurboQuantPlus defaults — tuned for M5 Max 128GB
 DEFAULTS = {
@@ -39,7 +44,7 @@ DEFAULTS = {
 
 def build_parser():
     p = argparse.ArgumentParser(
-        description="TurboQuantPlus — optimized Qwen3-Coder-30B-A3B-Instruct on Apple Silicon"
+        description="TurboQuantPlus — optimized Qwen3.6-27B (MX-FP8) on Apple Silicon"
     )
     p.add_argument("--model", default=MODEL_ID,
                    help="HF model ID or local snapshot path")

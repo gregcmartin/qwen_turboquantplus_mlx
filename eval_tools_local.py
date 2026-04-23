@@ -40,10 +40,12 @@ LONG_CONTEXT_PAD = (_PAD_UNIT * 120)  # roughly ~2k tokens
 
 
 def generate_text(model, tokenizer, messages, tools, kv_bits=0,
-                  kv_group_size=64, quantized_kv_start=512, max_tokens=384):
-    formatted = tokenizer.apply_chat_template(
-        messages, tools=tools, tokenize=False, add_generation_prompt=True
-    )
+                  kv_group_size=64, quantized_kv_start=512, max_tokens=384,
+                  enable_thinking=None):
+    tmpl_kwargs = dict(tools=tools, tokenize=False, add_generation_prompt=True)
+    if enable_thinking is not None:
+        tmpl_kwargs["enable_thinking"] = enable_thinking
+    formatted = tokenizer.apply_chat_template(messages, **tmpl_kwargs)
     sampler = make_sampler(temp=0.2, top_p=0.9, min_p=0.0)
     kwargs = dict(max_tokens=max_tokens, sampler=sampler)
     if kv_bits > 0:
@@ -95,7 +97,8 @@ def response_from_generation(text, tools):
                          "finish_reason": "tool_calls" if tool_calls else "stop"}]}
 
 
-def run_config(model, tokenizer, cfg, long_context=False):
+def run_config(model, tokenizer, cfg, long_context=False, enable_thinking=None,
+               max_tokens=384):
     print(f"\n=== {cfg['label']}{'  (long ctx)' if long_context else ''} ===")
     passes = 0
     total = 0
@@ -113,6 +116,8 @@ def run_config(model, tokenizer, cfg, long_context=False):
             kv_bits=cfg.get("kv_bits", 0),
             kv_group_size=cfg.get("kv_group_size", 64),
             quantized_kv_start=cfg.get("quantized_kv_start", 512),
+            enable_thinking=enable_thinking,
+            max_tokens=max_tokens,
         )
         dt = time.time() - start
         resp = response_from_generation(text, task["tools"])
@@ -137,6 +142,12 @@ def main():
                          "KV-quant activates at start=512")
     ap.add_argument("--configs", nargs="*",
                     help="Subset of config labels to run")
+    ap.add_argument("--no-thinking", action="store_true",
+                    help="Pass enable_thinking=False to the chat template "
+                         "(for reasoning models like Qwen3.6-27B — skips the "
+                         "<think> prefix so the model emits a tool call directly)")
+    ap.add_argument("--max-tokens", type=int, default=384,
+                    help="Generation budget per task")
     args = ap.parse_args()
 
     print(f"Loading {args.model} ...")
@@ -148,7 +159,12 @@ def main():
     for cfg in CONFIGS:
         if args.configs and cfg["label"] not in args.configs:
             continue
-        p, t = run_config(model, tokenizer, cfg, long_context=args.long_context)
+        p, t = run_config(
+            model, tokenizer, cfg,
+            long_context=args.long_context,
+            enable_thinking=False if args.no_thinking else None,
+            max_tokens=args.max_tokens,
+        )
         summary.append((cfg["label"], p, t))
 
     print("\n=== Summary ===")

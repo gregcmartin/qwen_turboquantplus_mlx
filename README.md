@@ -1,10 +1,10 @@
 # TurboQuantPlus
 
-Run Qwen3-Coder-30B-A3B-Instruct locally on Apple Silicon with optimized KV cache quantization, plus an OpenAI-compatible server for tools like opencode.
+Run Qwen3.6-27B locally on Apple Silicon with MX-FP8 weights and optimized KV cache quantization, plus an OpenAI-compatible server for tools like opencode.
 
 ## What It Does
 
-Runs [`mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit`](https://huggingface.co/mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit) (30B params, ~3B active per token, 8-bit MLX weights) through Apple's MLX framework with 4-bit KV cache quantization. This keeps generation speed high even at long contexts, and preserves tool-calling accuracy — verified end-to-end with the included eval harness.
+Quantizes [`Qwen/Qwen3.6-27B`](https://huggingface.co/Qwen/Qwen3.6-27B) (dense 27B parameters) from BF16 to MX-FP8 using `mlx_lm.convert --q-mode mxfp8`, then runs it through Apple's MLX framework with 4-bit KV cache quantization. MX-FP8 is a true floating-point 8-bit format (OCP Microscaling) — distinct from the int8 grouped quant used by most `mlx-community/...-8bit` models. The 4-bit KV cache keeps generation speed high even at long contexts.
 
 ## Requirements
 
@@ -12,7 +12,7 @@ Runs [`mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit`](https://huggingface.co/
 - macOS 14+
 - Python 3.12+
 - 64GB+ unified memory recommended
-- ~30GB disk for model weights
+- ~90GB free disk during conversion (~56GB BF16 download + ~26GB MX-FP8 output)
 
 ## Setup
 
@@ -25,7 +25,17 @@ source .venv/bin/activate
 pip install mlx-lm huggingface_hub
 ```
 
-The model downloads automatically on first run (~30GB).
+### Quantize the model (one-time)
+
+```bash
+mkdir -p models
+python -m mlx_lm convert \
+  --hf-path Qwen/Qwen3.6-27B \
+  --mlx-path ./models/Qwen3.6-27B-MLX-mxfp8 \
+  -q --q-mode mxfp8
+```
+
+The resulting directory (~26 GB, 8.25 bits/weight effective) is what `turboquant.py` loads by default.
 
 ## Usage
 
@@ -50,9 +60,9 @@ Then point opencode at it by putting this in `~/.opencode.json`:
 ```json
 {
   "agents": {
-    "coder": { "model": "local.mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit" },
-    "task":  { "model": "local.mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit" },
-    "title": { "model": "local.mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit" }
+    "coder": { "model": "local.Qwen3.6-27B-MLX-mxfp8" },
+    "task":  { "model": "local.Qwen3.6-27B-MLX-mxfp8" },
+    "title": { "model": "local.Qwen3.6-27B-MLX-mxfp8" }
   }
 }
 ```
@@ -85,25 +95,47 @@ Two evaluators are included, covering the OpenAI `tools` / `tool_calls` path use
 - **`eval_tools.py`** — hits the running HTTP server (`./run.sh --serve`) with a suite of tool-call tasks and scores tool selection + argument validity.
 - **`eval_tools_local.py`** — loads the model in-process and runs the same suite under four KV-cache configurations (full-precision, 8-bit, 4-bit @ start=512, 4-bit @ start=0), with an optional `--long-context` mode that exercises KV quant at ~3.8k-token prompts.
 
-On M5 Max 128GB, Qwen3-Coder-30B-A3B-Instruct-8bit scores **11/11 at every KV configuration, at both short and long context** — the KV quant does not degrade tool calling.
+Qwen3.6-27B is a reasoning model — if `enable_thinking` is left on (the default), the model spends its first few hundred tokens in a `<think>…</think>` block, which can blow through a tight `max_tokens` budget before a tool call ever appears. Pass `--no-thinking` to `eval_tools_local.py` to short-circuit reasoning and measure tool-calling behavior directly.
 
 ```bash
 # Server eval (needs --serve running in another terminal)
 python eval_tools.py
 
-# In-process comparison across KV configs
-python eval_tools_local.py
-python eval_tools_local.py --long-context
+# In-process comparison across KV configs (reasoning off — fair tool-call measurement)
+python eval_tools_local.py --no-thinking
+python eval_tools_local.py --no-thinking --long-context
 ```
+
+Results on M5 Max 128GB, Qwen3.6-27B MX-FP8, with `--no-thinking`:
+
+| KV config | Short context (~300 tok) | Long context (~3.4k tok) |
+|---|---|---|
+| full-precision | 11/11 | 10/11 |
+| 8-bit @ start=512 | 11/11 | 10/11 |
+| 4-bit @ start=512 | 11/11 | 10/11 |
+| 4-bit @ start=0 | 11/11 | 10/11 |
+
+The single long-context miss (`web_search_recent`) is consistent across all four KV configs — the model answers from its own knowledge instead of calling the search tool. Not a quantization artifact.
 
 ## How the Optimization Works
 
-The KV attention cache grows with every generated token. At full precision it becomes a bottleneck and generation slows down fast. TurboQuantPlus quantizes this cache to 4-bit with two refinements:
+Two layers of quantization, attacking different bottlenecks:
 
-- The first 512 tokens stay at full precision (system prompt and early context matter most for quality).
-- Values are quantized in groups of 64 to reduce error.
+1. **Weights → MX-FP8.** The OCP Microscaling FP8 format stores each weight as an 8-bit float (E4M3-style) with a shared exponent per microblock. Closer in dynamic range to BF16 than int8 grouped quant, with the same ~8-bit storage footprint.
+2. **KV cache → 4-bit.** The attention cache grows with every generated token; at full precision it becomes the bottleneck at long contexts. TurboQuantPlus keeps the first 512 tokens full-precision (system prompt and early context matter most for quality) and quantizes the rest in groups of 64.
 
-In the included eval, 4-bit KV quantization holds 100% tool-call accuracy at ~3.8k-token prompts while full-precision and 4-bit configurations run within a few percent of each other on throughput.
+Dense 27B means every token activates all 27B parameters (no MoE sparsity), so generation throughput is lower than the previous 30B-A3B MoE config.
+
+Measured on M5 Max 128GB, Qwen3.6-27B MX-FP8, 512-token generation, `--no-thinking`:
+
+| KV config | gen tok/s | prompt tok/s | peak mem |
+|---|---|---|---|
+| full-precision | **17.8** | 228 | 28.1 GB |
+| 8-bit @ start=512 | 16.9 | 201 | 28.1 GB |
+| 4-bit @ start=512 | 16.2 | 195 | 28.1 GB |
+| 4-bit @ start=0 | 16.6 | 193 | 28.1 GB |
+
+At this generation length the KV cache is small enough that dequant overhead slightly exceeds the bandwidth savings — full-precision KV is actually fastest. The KV-quant win grows with context length; switch to `--kv-bits 4` for prompts pushing past a few thousand tokens or when peak memory becomes the constraint.
 
 ## License
 
