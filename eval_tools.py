@@ -14,6 +14,7 @@ opencode also talks to), so pass/fail here reflects what opencode would see.
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -21,7 +22,13 @@ import urllib.error
 
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:8080/v1"
-DEFAULT_MODEL = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit"
+# mlx_lm.server advertises models by their absolute resolved path, so the
+# client has to reference the exact same string.
+DEFAULT_MODEL = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "models",
+    "Qwen3.6-27B-MLX-mxfp8",
+)
 
 
 # --- Tool specs shared across tasks -----------------------------------------

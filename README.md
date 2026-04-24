@@ -55,19 +55,29 @@ The resulting directory (~26 GB, 8.25 bits/weight effective) is what `turboquant
 ./run.sh --serve --port 9000          # custom port
 ```
 
-Then point opencode at it by putting this in `~/.opencode.json`:
+### Launch opencode with one command
+
+`launch-opencode.sh` starts the TurboQuantPlus server (if not already running), waits for it to be ready, and then runs opencode pointed at the local endpoint. The server is torn down when opencode exits.
+
+```bash
+./launch-opencode.sh                   # start server + opencode
+./launch-opencode.sh --init-config     # also write ~/.opencode.json (only if missing)
+HOST=0.0.0.0 PORT=9000 ./launch-opencode.sh   # custom bind/port
+```
+
+`mlx_lm.server` advertises models by their absolute resolved path, so the opencode config must reference the full path:
 
 ```json
 {
   "agents": {
-    "coder": { "model": "local.Qwen3.6-27B-MLX-mxfp8" },
-    "task":  { "model": "local.Qwen3.6-27B-MLX-mxfp8" },
-    "title": { "model": "local.Qwen3.6-27B-MLX-mxfp8" }
+    "coder": { "model": "local./absolute/path/to/turboquant/models/Qwen3.6-27B-MLX-mxfp8" },
+    "task":  { "model": "local./absolute/path/to/turboquant/models/Qwen3.6-27B-MLX-mxfp8" },
+    "title": { "model": "local./absolute/path/to/turboquant/models/Qwen3.6-27B-MLX-mxfp8" }
   }
 }
 ```
 
-and launching opencode with `LOCAL_ENDPOINT=http://127.0.0.1:8080/v1 opencode`.
+`./launch-opencode.sh --init-config` writes exactly this JSON (with the correct absolute path substituted) to `~/.opencode.json` when the file doesn't already exist.
 
 ### Options
 
